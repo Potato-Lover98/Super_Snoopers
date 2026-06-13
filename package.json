@@ -1,0 +1,10 @@
+{
+  "name": "super-snoopers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Super Snoopers — three.js arena shooter with serverless matchmaking",
+  "dependencies": {
+    "@upstash/redis": "^1.34.3"
+  }
+}

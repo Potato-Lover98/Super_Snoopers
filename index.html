@@ -109,12 +109,24 @@
 
   #scoreboard {
     position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
-    background: var(--panel); padding: 8px 20px; border-radius: 10px;
-    font-weight: 700; font-size: 15px; display: flex; gap: 22px;
+    background: var(--panel); padding: 6px 18px; border-radius: 10px;
+    font-weight: 700; font-size: 14px; display: flex; gap: 18px; opacity: .9;
   }
-  #roomtag { position: absolute; top: 18px; right: 22px; background: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 13px; opacity: .85; }
+  #roomtag { position: absolute; top: 18px; left: 18px; background: var(--panel); padding: 6px 14px; border-radius: 8px; font-size: 13px; opacity: .85; }
 
-  #killfeed { position: absolute; top: 64px; right: 22px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+  /* FFA leaderboard (top-right, Veck/Poxel style) */
+  #leaderboard {
+    position: absolute; top: 16px; right: 16px; width: 210px;
+    background: var(--panel); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 10px; padding: 8px 10px; font-size: 13px;
+  }
+  #leaderboard .lb-title { font-size: 11px; letter-spacing: 2px; opacity: .55; font-weight: 800; margin-bottom: 6px; display: flex; justify-content: space-between; }
+  #leaderboard .lb-row { display: flex; justify-content: space-between; padding: 3px 6px; border-radius: 6px; font-weight: 700; }
+  #leaderboard .lb-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+  #leaderboard .lb-row .kc { color: var(--accent2); }
+  #leaderboard .lb-row.me { background: rgba(255,87,34,.25); }
+
+  #killfeed { position: absolute; top: 150px; right: 16px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
   #killfeed div { background: rgba(0,0,0,.5); padding: 4px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; animation: fade 4s forwards; }
   @keyframes fade { 0%{opacity:1} 80%{opacity:1} 100%{opacity:0} }
 
@@ -168,6 +180,7 @@
   <div id="hitmark">✕</div>
   <div id="scoreboard"><span>Kills: <b id="sb-kills">0</b></span><span>Deaths: <b id="sb-deaths">0</b></span></div>
   <div id="roomtag"></div>
+  <div id="leaderboard"><div class="lb-title"><span>FFA</span><span id="lb-count">1/5</span></div><div id="lb-rows"></div></div>
   <div id="killfeed"></div>
   <div id="health-wrap">
     <div id="health-label">HEALTH</div>

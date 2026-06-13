@@ -1125,10 +1125,11 @@ function addRemote(id, name) {
   if (remotePlayers.has(id)) return;
   const mesh = makeAvatar(name, id);
   remotePlayers.set(id, {
-    mesh, name: name || 'SuperSnooper', health: 100, dead: false,
+    mesh, name: name || 'SuperSnooper', health: 100, dead: false, kills: 0,
     target: { x: 0, y: 0, z: 0, ry: 0 },
     box: new THREE.Box3(),
   });
+  renderLeaderboard();
 }
 function setRemoteName(id, name) {
   const rp = remotePlayers.get(id);
@@ -1148,8 +1149,23 @@ function setRemoteName(id, name) {
 }
 function removeRemote(id) {
   const rp = remotePlayers.get(id);
-  if (rp) { scene.remove(rp.mesh); remotePlayers.delete(id); }
+  if (rp) { scene.remove(rp.mesh); remotePlayers.delete(id); renderLeaderboard(); }
 }
+
+// FFA leaderboard (top-right) — all players sorted by kills
+function renderLeaderboard() {
+  const rows = document.getElementById('lb-rows');
+  const cnt = document.getElementById('lb-count');
+  if (!rows) return;
+  const list = [{ name: myName, kills: player.kills, me: true }];
+  for (const rp of remotePlayers.values()) list.push({ name: rp.name, kills: rp.kills || 0, me: false });
+  list.sort((a, b) => b.kills - a.kills);
+  if (cnt) cnt.textContent = `${list.length}/${MAX_PLAYERS}`;
+  rows.innerHTML = list.slice(0, MAX_PLAYERS).map(p =>
+    `<div class="lb-row${p.me ? ' me' : ''}"><span class="nm">${escapeHtml(p.name)}</span><span class="kc">${p.kills}</span></div>`
+  ).join('');
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 // dead snooper vanishes until respawn
 function setRemoteDead(id, dead) {
   const rp = remotePlayers.get(id);
@@ -1195,6 +1211,7 @@ function netTick() {
     x: p.x, y: p.y - CFG.eyeHeight, z: p.z,
     ry: camera.rotation.y + Math.PI,  // facing
     name: myName,                     // self-heal names for late joiners
+    kills: player.kills,              // for the FFA leaderboard
   });
 }
 
@@ -1243,6 +1260,7 @@ function updateHud() {
   document.getElementById('sb-kills').textContent = player.kills;
   document.getElementById('sb-deaths').textContent = player.deaths;
   updateWeaponHud();
+  renderLeaderboard();
 }
 function addKillFeed(txt) {
   const f = document.getElementById('killfeed');
@@ -1319,7 +1337,15 @@ function closePause() {
   document.getElementById('pause-room').style.display = 'none';
 }
 function leaveGame() {
-  if (net) { try { net.send({ t: 'bye' }); net.peer.destroy(); } catch (e) {} net = null; }
+  if (net) {
+    try {
+      net.send({ t: 'bye' });
+      stopHeartbeat();
+      if (net.host && net.ns === PUB && net.roomId) mmPost('leave', { code: net.roomId });
+      net.peer.destroy();
+    } catch (e) {}
+    net = null;
+  }
   for (const id of [...remotePlayers.keys()]) removeRemote(id);
   running = false; paused = false;
   closePause();
@@ -1349,16 +1375,30 @@ function setRoomUrl(code) {
 // into a private friends room. PUB = quick pool, PRIV = friends-only codes.
 const PUB  = 'snoopers-pub-v2-';
 const PRIV = 'snoopers-priv-v2-';
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 5;
+const MM_API = '/api/rooms';                 // serverless matchmaking (Vercel)
+const RELAY = new Set(['pos', 'hit', 'bomb', 'died', 'spawn']);  // host forwards these
+
+// ---- matchmaking server calls ----
+async function mmFind() {
+  try { const r = await fetch(MM_API + '?action=find'); if (!r.ok) return null; const j = await r.json(); return j.code || null; }
+  catch { return null; }
+}
+function mmPost(action, extra) {
+  try { fetch(MM_API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, ...extra }) }).catch(() => {}); }
+  catch {}
+}
+function roomCount() { return net ? net.conns.size + 1 : 1; }   // peers + self
+function mmBeat() { if (net && net.host && net.ns === PUB && net.roomId) mmPost('heartbeat', { code: net.roomId, count: roomCount() }); }
+function startHeartbeat() { stopHeartbeat(); mmBeat(); if (net) net._beat = setInterval(mmBeat, 5000); }
+function stopHeartbeat() { if (net && net._beat) { clearInterval(net._beat); net._beat = null; } }
 
 function makeNet() {
   return {
-    peer: null, host: false, conns: new Map(), roomId: null,
-    send(msg) {
-      msg.from = myId;
-      for (const c of this.conns.values()) if (c.open) c.send(msg);
-    },
+    peer: null, host: false, conns: new Map(), roomId: null, ns: null, _beat: null,
+    send(msg) { msg.from = myId; for (const c of this.conns.values()) if (c.open) c.send(msg); },
     sendTo(id, msg) { const c = this.conns.get(id); if (c && c.open) { msg.from = myId; c.send(msg); } },
+    sendExcept(exceptId, msg) { for (const [id, c] of this.conns) if (id !== exceptId && c.open) c.send(msg); },
   };
 }
 
@@ -1368,27 +1408,28 @@ function genCode() {
   return s;
 }
 
+// Star topology: clients connect only to the host; the host relays player
+// events to everyone else. Simple + reliable for ≤5 players, and the cap is
+// trivially enforced (the host counts its connections).
 function handleNetData(conn, data) {
   const from = data.from || conn.peer;
-  if (from === myId) return;            // ignore anything echoed from ourselves
+  if (from === myId) return;
+  if (net && net.host && RELAY.has(data.t)) net.sendExcept(conn.peer, data);  // relay
+
   switch (data.t) {
     case 'hello':
-      addRemote(from, data.name); setRemoteName(from, data.name);
-      // host informs newcomer about existing peers + relays to others
-      if (net.host) {
-        // tell new peer about everyone else
-        for (const id of net.conns.keys()) if (id !== from) net.sendTo(from, { t: 'peer', id });
-      }
-      break;
-    case 'peer':
-      // mesh: connect to other peers we learn about
-      if (data.id !== myId && !net.conns.has(data.id)) connectTo(data.id);
+      addRemote(from, data.name); setRemoteName(from, data.name); renderLeaderboard();
       break;
     case 'pos': {
       let rp = remotePlayers.get(from);
       if (!rp) { addRemote(from, data.name); rp = remotePlayers.get(from); }
       else if (data.name) setRemoteName(from, data.name);
-      if (rp) { rp.target.x = data.x; rp.target.y = data.y; rp.target.z = data.z; rp.target.ry = data.ry; if (rp.dead) setRemoteDead(from, false); }
+      if (rp) {
+        rp.target.x = data.x; rp.target.y = data.y; rp.target.z = data.z; rp.target.ry = data.ry;
+        rp.kills = data.kills || 0;
+        if (rp.dead) setRemoteDead(from, false);
+      }
+      renderLeaderboard();
       break;
     }
     case 'hit':
@@ -1398,124 +1439,110 @@ function handleNetData(conn, data) {
       addRemote(from, data.name); setRemoteName(from, data.name); setRemoteDead(from, false);
       break;
     case 'bomb': {
-      // remote-thrown grenade: render + can damage me, but I don't deal its damage
       const mesh = makeBombMesh();
       mesh.position.set(data.x, data.y, data.z); scene.add(mesh);
       grenades.push({ mesh, vel: new THREE.Vector3(data.vx, data.vy, data.vz), spin: new THREE.Vector3(8,5,3), fuse: 1.6, dmg: 0, radius: data.radius, mine: false, fromId: from });
       break;
     }
     case 'died':
-      setRemoteDead(from, true);   // victim vanishes until respawn
+      setRemoteDead(from, true);
       if (data.by === myId) { player.kills++; updateHud(); addKillFeed(`${myName} ☠ ${nameFor(from)}`); }
       else addKillFeed(`${nameFor(data.by)} ☠ ${nameFor(from)}`);
+      renderLeaderboard();
       break;
     case 'bye':
-      removeRemote(from);
+      removeRemote(from); renderLeaderboard(); if (net && net.host) mmBeat();
       break;
   }
 }
 
-function wireConn(conn) {
-  conn.on('open', () => {
-    net.conns.set(conn.peer, conn);
-    conn.send({ t: 'hello', name: myName, from: myId });
-  });
-  conn.on('data', d => handleNetData(conn, d));
-  conn.on('close', () => { net.conns.delete(conn.peer); removeRemote(conn.peer); });
-  conn.on('error', () => {});
-}
-
-function connectTo(peerId) {
-  if (!net || !net.peer) return;
-  const conn = net.peer.connect(peerId, { reliable: false });
-  wireConn(conn);
-}
-
-// ---- Host a room (ns = PUB for quick, PRIV for friends) ----
+// ---- Host a room (ns = PUB for quick match, PRIV for friends) ----
 function hostRoom(ns, onReady, onFail) {
-  net = makeNet(); net.host = true;
+  net = makeNet(); net.host = true; net.ns = ns;
   const code = genCode();
-  net.roomId = code; net.ns = ns;
+  net.roomId = code;
   const peer = new Peer(ns + code, { debug: 1 });
   net.peer = peer;
-  peer.on('open', id => { myId = id; onReady(code); });
-  peer.on('connection', conn => wireConn(conn));
+  peer.on('open', id => { myId = id; if (ns === PUB) startHeartbeat(); onReady(code); });
+  peer.on('connection', conn => {
+    conn.on('open', () => {
+      if (net.conns.size >= MAX_PLAYERS - 1) {           // room full (self + 4)
+        try { conn.send({ t: 'full' }); } catch (e) {}
+        setTimeout(() => { try { conn.close(); } catch (e) {} }, 150);
+        return;
+      }
+      net.conns.set(conn.peer, conn);
+      conn.send({ t: 'welcome', name: myName, from: myId });
+      mmBeat();
+    });
+    conn.on('data', d => handleNetData(conn, d));
+    conn.on('close', () => { net.conns.delete(conn.peer); removeRemote(conn.peer); renderLeaderboard(); mmBeat(); });
+    conn.on('error', () => {});
+  });
   peer.on('error', err => {
-    if (err.type === 'unavailable-id') { hostRoom(ns, onReady, onFail); } // code taken, retry
+    if (err.type === 'unavailable-id') hostRoom(ns, onReady, onFail);  // code taken, retry
     else onFail(err);
   });
 }
 
-// ---- Join a specific room by code — tries PRIV (friends) then PUB ----
+// connect to a host id; resolves on 'welcome', fails on 'full' / timeout
+function connectToHost(fullId, code, ns, onJoined, onFail) {
+  const conn = net.peer.connect(fullId, { reliable: false });
+  let done = false;
+  conn.on('open', () => conn.send({ t: 'hello', name: myName, from: myId }));
+  conn.on('data', d => {
+    if (done) { handleNetData(conn, d); return; }
+    if (d.t === 'full') { done = true; try { conn.close(); } catch (e) {} onFail('full'); return; }
+    if (d.t === 'welcome') {
+      done = true; net.ns = ns; net.roomId = code; net.conns.set(conn.peer, conn);
+      addRemote(d.from || conn.peer, d.name); setRemoteName(d.from || conn.peer, d.name);
+      onJoined(code);
+      return;
+    }
+    handleNetData(conn, d);
+  });
+  conn.on('close', () => { net.conns.delete(conn.peer); removeRemote(conn.peer); });
+  conn.on('error', () => {});
+  setTimeout(() => { if (!done) { done = true; try { conn.close(); } catch (e) {} onFail('no-response'); } }, 4500);
+}
+
+// ---- Join by code — tries PRIV (friends) then PUB ----
 function joinRoom(code, onJoined, onFail) {
   code = code.toUpperCase();
-  net = makeNet(); net.host = false;
-  net.roomId = code;
+  net = makeNet(); net.host = false; net.roomId = code;
   const peer = new Peer(null, { debug: 1 });
   net.peer = peer;
-  peer.on('open', id => {
-    myId = id;
-    const attempt = (ns, isLast) => {
-      const conn = peer.connect(ns + code, { reliable: false });
-      let ok = false;
-      conn.on('open', () => {
-        ok = true; net.ns = ns; net.conns.set(conn.peer, conn);
-        conn.send({ t:'hello', name: myName, from: myId });
-        conn.on('data', d => handleNetData(conn, d));
-        conn.on('close', () => { net.conns.delete(conn.peer); removeRemote(conn.peer); });
-        onJoined(code);
-      });
-      conn.on('error', () => {});
-      setTimeout(() => {
-        if (ok) return;
-        try { conn.close(); } catch (e) {}
-        if (isLast) onFail('no-response'); else attempt(PUB, true);
-      }, 3500);
-    };
-    attempt(PRIV, false);   // friends rooms first, then public
+  peer.on('open', () => {
+    myId = peer.id;
+    connectToHost(PRIV + code, code, PRIV, onJoined, e => {
+      if (e === 'full') { onFail('full'); return; }
+      connectToHost(PUB + code, code, PUB, onJoined, onFail);   // fall back to public
+    });
   });
   peer.on('error', err => onFail(err.type || 'error'));
 }
 
-// ---- Quick match: probe random codes, join first that answers & isn't full ----
+// ---- Quick match via the matchmaking server ----
 function quickMatch(statusEl, onJoined) {
   net = makeNet(); net.host = false;
   const peer = new Peer(null, { debug: 1 });
   net.peer = peer;
-  peer.on('open', id => {
-    myId = id;
-    let attempts = 0;
-    const tried = new Set();
-    const tryNext = () => {
-      attempts++;
-      statusEl.textContent = `Searching for open rooms… (${attempts})`;
-      if (attempts > 12) { // none found → host our own public room (URL shows id)
-        statusEl.textContent = 'No open rooms — hosting a new one.';
-        peer.destroy();
-        hostRoom(PUB, code => { setRoomTag('HOST ' + code); setRoomUrl(code); onJoined(); }, () => { startSolo(); });
-        return;
-      }
-      let code; do { code = genCode(); } while (tried.has(code));
-      tried.add(code);
-      const conn = peer.connect(PUB + code, { reliable: false });
-      let answered = false;
-      conn.on('open', () => {
-        answered = true;
-        net.roomId = code; net.conns.set(conn.peer, conn);
-        conn.send({ t:'hello', name: myName, from: myId });
-        conn.on('data', d=>handleNetData(conn,d));
-        conn.on('close',()=>{net.conns.delete(conn.peer);removeRemote(conn.peer);});
-        setRoomTag('ROOM ' + code);
-        setRoomUrl(code);
-        onJoined();
-      });
-      conn.on('error', () => {});
-      // if no open within 700ms, this code is empty/dead → skip
-      setTimeout(() => { if (!answered) { try { conn.close(); } catch(e){} tryNext(); } }, 800);
-    };
-    tryNext();
+  const hostNew = () => {
+    statusEl.textContent = 'Creating a new room…';
+    if (net.peer) net.peer.destroy();
+    hostRoom(PUB, code => { setRoomTag('HOST ' + code); setRoomUrl(code); onJoined(); }, () => startSolo());
+  };
+  peer.on('open', async () => {
+    myId = peer.id;
+    statusEl.textContent = 'Finding a match…';
+    const code = await mmFind();
+    if (!code) return hostNew();
+    statusEl.textContent = 'Joining room ' + code + '…';
+    connectToHost(PUB + code, code, PUB,
+      () => { setRoomTag('ROOM ' + code); setRoomUrl(code); onJoined(); },
+      () => hostNew());     // full/dead → make our own
   });
-  peer.on('error', () => { startSolo(); });
+  peer.on('error', () => startSolo());
 }
 
 function setRoomTag(txt) { const el = document.getElementById('roomtag'); el.dataset.room = txt; if (!devAdjust) el.textContent = txt; }
