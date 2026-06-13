@@ -66,12 +66,12 @@ const WEAPONS = [
     pos:[0.5,-0.5,-1.0], rot:[-6.221, 1.48, 1.65], scale:1.1 },
 
   { key:'bomb', name:'Grenade', type:'throw', count:3, dmg:80, radius:7,
-    fbx:'./assets/bomb/uploads_files_844193_MK2+Grenade/MK2.FBX',
-    tex:{ map:'./assets/bomb/uploads_files_844193_MK2+Grenade/PBR Textures/PBR_MK2_Base_Color.png',
-          normalMap:'./assets/bomb/uploads_files_844193_MK2+Grenade/PBR Textures/PBR_MK2_Normal_DirectX.png',
-          metalnessMap:'./assets/bomb/uploads_files_844193_MK2+Grenade/PBR Textures/PBR_MK2_Metallic.png',
-          roughnessMap:'./assets/bomb/uploads_files_844193_MK2+Grenade/PBR Textures/PBR_MK2_Roughness.png',
-          aoMap:'./assets/bomb/uploads_files_844193_MK2+Grenade/PBR Textures/PBR_MK2_Mixed_AO.png' },
+    fbx:'./assets/bomb/mk2.fbx',
+    tex:{ map:'./assets/bomb/mk2_basecolor.png',
+          normalMap:'./assets/bomb/mk2_normal.png',
+          metalnessMap:'./assets/bomb/mk2_metallic.png',
+          roughnessMap:'./assets/bomb/mk2_roughness.png',
+          aoMap:'./assets/bomb/mk2_ao.png' },
     pos:[0.28,-0.30,-0.5], rot:[0,Math.PI,0], scale:0.35 },
 ];
 let curWeapon = 0;

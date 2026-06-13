@@ -15,3 +15,5 @@ assets/pistol/uploads_files_2127688_tt33_cgtrader/specular_gloss_textures/
 
 # Maya source (can't load in browser; convert to .fbx/.glb)
 assets/player/*.ma
+.vercel
+.env*

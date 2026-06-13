@@ -28,6 +28,14 @@ export default async function handler(req, res) {
   body = body || {};
   const action = req.query.action || body.action;
 
+  // matchmaking DB not configured yet → degrade gracefully (no 500 spam).
+  // The client then just hosts/join-by-code. Add Upstash on Vercel to enable.
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    if (action === 'find') return res.status(200).json({ code: null, disabled: true });
+    if (action === 'list') return res.status(200).json({ rooms: [], disabled: true });
+    return res.status(200).json({ ok: false, disabled: true });
+  }
+
   try {
     const r = db();
 
