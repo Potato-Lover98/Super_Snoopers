@@ -25,7 +25,8 @@ const CFG = {
   gravity: 26,
   eyeHeight: 1.7,
   playerRadius: 0.4,
-  arenaHalf: 70,
+  arenaHalf: 130,     // huge arena
+  stepUp: 0.75,       // max height a player can step/climb in one go
   netTickMs: 50,      // position broadcast interval
 };
 
@@ -168,7 +169,7 @@ function init() {
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fc6e0);
-  scene.fog = new THREE.Fog(0x9fc6e0, 60, 180);
+  scene.fog = new THREE.Fog(0x9fc6e0, 120, 360);
 
   camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 500);
   camera.position.set(0, CFG.eyeHeight, 0);
@@ -360,10 +361,10 @@ function buildLights() {
   sun.position.set(40, 80, 30);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  const s = 90;
+  const s = 150;
   sun.shadow.camera.left = -s; sun.shadow.camera.right = s;
   sun.shadow.camera.top = s; sun.shadow.camera.bottom = -s;
-  sun.shadow.camera.far = 220;
+  sun.shadow.camera.far = 400;
   sun.shadow.bias = -0.0004;
   scene.add(sun);
 }
@@ -397,39 +398,92 @@ function buildMap() {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // perimeter walls
+  const A = CFG.arenaHalf;
+
+  // perimeter walls (tall so nobody escapes the arena)
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a8f99, roughness: .9 });
-  const H = 6, T = 2, A = CFG.arenaHalf;
-  const walls = [
-    [0, H/2, -A, A*2, H, T], [0, H/2, A, A*2, H, T],
-    [-A, H/2, 0, T, H, A*2], [A, H/2, 0, T, H, A*2],
-  ];
-  for (const [x,y,z,w,h,d] of walls) addBox(x,y,z,w,h,d,wallMat);
+  const H = 12, T = 3;
+  [[0,H/2,-A,A*2,H,T],[0,H/2,A,A*2,H,T],[-A,H/2,0,T,H,A*2],[A,H/2,0,T,H,A*2]]
+    .forEach(([x,y,z,w,h,d]) => addBox(x,y,z,w,h,d,wallMat));
 
-  // buildings — varied low-poly blocks with flat palette
-  const palette = [0xc94c4c, 0xd9a441, 0x4c7fc9, 0x5bc06b, 0xb47ad0, 0xe0e0e0, 0xff8a5b];
-  const layout = [
-    [-40, 0, -35, 14, 16, 14], [-15, 0, -45, 10, 24, 10], [20, 0, -40, 18, 12, 12],
-    [45, 0, -20, 12, 20, 12], [38, 0, 25, 16, 14, 16], [10, 0, 40, 12, 28, 12],
-    [-25, 0, 30, 14, 18, 14], [-48, 0, 8, 10, 22, 10], [0, 0, 0, 8, 10, 8],
-    [-30, 0, -8, 9, 14, 9], [28, 0, -5, 10, 18, 10],
-  ];
-  layout.forEach((b, i) => {
-    const [x,,z,w,h,d] = b;
-    const mat = new THREE.MeshStandardMaterial({ color: palette[i % palette.length], roughness: .85, flatShading: true });
-    addBox(x, h/2, z, w, h, d, mat, true);
-    // rooftop trim
-    const trim = new THREE.MeshStandardMaterial({ color: 0x2b2f38, flatShading: true });
-    addBox(x, h + 0.4, z, w + 1, 0.8, d + 1, trim, true);
-  });
+  // SEEDED rng → the random map is identical for every player (multiplayer-safe)
+  const rnd = mulberry32(0x5009A1);
+  const rand = (a, b) => a + (b - a) * rnd();
+  const palette = [0xc94c4c, 0xd9a441, 0x4c7fc9, 0x5bc06b, 0xb47ad0, 0xe0e0e0, 0xff8a5b, 0x46c2c2];
+  const placed = [];
 
-  // scattered crates (cover) — low poly
+  const tryPlace = (w, d, gap) => {
+    for (let t = 0; t < 40; t++) {
+      const x = rand(-A + 18, A - 18), z = rand(-A + 18, A - 18);
+      if (Math.hypot(x, z) < 16) continue;                 // keep spawn area open
+      let ok = true;
+      for (const p of placed) {
+        if (Math.abs(x - p.x) < (w + p.w) / 2 + gap && Math.abs(z - p.z) < (d + p.d) / 2 + gap) { ok = false; break; }
+      }
+      if (ok) { placed.push({ x, z, w, d }); return { x, z }; }
+    }
+    return null;
+  };
+
+  // climbable buildings (with a staircase to a walkable roof)
+  for (let i = 0; i < 30; i++) {
+    const w = rand(11, 22), d = rand(11, 22), h = rand(5, 14);
+    const p = tryPlace(w, d, 22); if (!p) continue;
+    const mat = new THREE.MeshStandardMaterial({ color: palette[Math.floor(rnd() * palette.length)], roughness: .85, flatShading: true });
+    addBox(p.x, h / 2, p.z, w, h, d, mat, true);
+    addBox(p.x, h + 0.25, p.z, w + 1, 0.5, d + 1, new THREE.MeshStandardMaterial({ color: 0x2b2f38, flatShading: true }), false); // roof trim
+    addStairs(p.x, p.z, w, d, h, Math.floor(rnd() * 4));   // climb to the roof
+  }
+
+  // tall landmark towers (not climbable — visual variety / sightline blockers)
+  for (let i = 0; i < 6; i++) {
+    const w = rand(9, 15), d = rand(9, 15), h = rand(20, 34);
+    const p = tryPlace(w, d, 24); if (!p) continue;
+    const mat = new THREE.MeshStandardMaterial({ color: palette[Math.floor(rnd() * palette.length)], roughness: .8, flatShading: true });
+    addBox(p.x, h / 2, p.z, w, h, d, mat, true);
+    addBox(p.x, h + 0.4, p.z, w + 1.5, 0.8, d + 1.5, new THREE.MeshStandardMaterial({ color: 0x23262e, flatShading: true }), false);
+  }
+
+  // cover crates scattered around
   const crateMat = new THREE.MeshStandardMaterial({ color: 0x9c6b3f, roughness: 1, flatShading: true });
-  const crates = [[-8,0,-15],[12,0,18],[-20,0,12],[30,0,8],[5,0,-25],[-38,0,-18],[42,0,-32],[-12,0,42]];
-  for (const [x,,z] of crates) { const s = 2.4; addBox(x, s/2, z, s, s, s, crateMat, true); }
+  for (let i = 0; i < 48; i++) {
+    const x = rand(-A + 10, A - 10), z = rand(-A + 10, A - 10);
+    if (Math.hypot(x, z) < 10) continue;
+    const s = rand(1.8, 3.2);
+    addBox(x, s / 2, z, s, s, s, crateMat, true);
+  }
+}
 
-  // ramps (visual platforms)
-  addBox(-15, 3, -32, 8, 1, 14, new THREE.MeshStandardMaterial({ color: 0x6c7280, flatShading: true }), true);
+// small deterministic PRNG so the procedural map matches across all clients
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// build a solid staircase from the ground up to a building's roof, on one side
+function addStairs(bx, bz, bw, bd, h, side) {
+  const rise = 0.6, depth = 0.85;
+  const n = Math.ceil(h / rise);
+  const stepW = Math.min(bw, bd) * 0.55;
+  const mat = new THREE.MeshStandardMaterial({ color: 0x6c7280, roughness: .9, flatShading: true });
+  let dx = 0, dz = 0, faceX = bx, faceZ = bz;
+  if (side === 0) { dz = 1; faceZ = bz + bd / 2; }
+  else if (side === 1) { dz = -1; faceZ = bz - bd / 2; }
+  else if (side === 2) { dx = 1; faceX = bx + bw / 2; }
+  else { dx = -1; faceX = bx - bw / 2; }
+  for (let i = 0; i < n; i++) {
+    const top = (i + 1) * rise;                 // solid block, top is the tread
+    const dist = (n - i - 0.5) * depth;         // farthest+lowest → nearest+highest (roof)
+    const cx = faceX + dx * dist, cz = faceZ + dz * dist;
+    const w = dx ? depth : stepW;
+    const d = dz ? depth : stepW;
+    addBox(cx, top / 2, cz, w, top, d, mat, true);
+  }
 }
 
 function addBox(x, y, z, w, h, d, mat, collide = true) {
@@ -947,7 +1001,7 @@ function updateMovement(dt) {
 
   // vertical
   pos.y += player.vel.y * dt;
-  const floor = groundHeightAt(pos.x, pos.z) + CFG.eyeHeight;
+  const floor = groundHeightAt(pos.x, pos.z, pos.y - CFG.eyeHeight) + CFG.eyeHeight;
   if (pos.y <= floor) { pos.y = floor; player.vel.y = 0; player.onGround = true; }
   else player.onGround = false;
 
@@ -1030,24 +1084,26 @@ function moveAxis(pos, axis, delta) {
   const old = pos[axis];
   pos[axis] += delta;
   const r = CFG.playerRadius;
+  const py0 = pos.y - CFG.eyeHeight, py1 = pos.y;
   for (const c of colliders) {
-    // player AABB vs collider AABB at feet..head
-    const py0 = pos.y - CFG.eyeHeight, py1 = pos.y;
     if (pos.x + r > c.min.x && pos.x - r < c.max.x &&
         pos.z + r > c.min.z && pos.z - r < c.max.z &&
         py1 > c.min.y && py0 < c.max.y) {
-      // only block if not standing on top (let gravity/groundHeight handle tops)
-      if (py0 < c.max.y - 0.3) { pos[axis] = old; player.vel[axis] = 0; return; }
+      // climbable if the surface is only a small step above the feet (stairs);
+      // otherwise it's a wall → block.
+      if (c.max.y - py0 > CFG.stepUp) { pos[axis] = old; player.vel[axis] = 0; return; }
     }
   }
 }
 
-function groundHeightAt(x, z) {
+// highest surface under the player that's reachable with a single step-up
+function groundHeightAt(x, z, feetY) {
   let h = 0;
   const r = CFG.playerRadius;
   for (const c of colliders) {
     if (x + r > c.min.x && x - r < c.max.x && z + r > c.min.z && z - r < c.max.z) {
-      if (c.max.y > h && c.max.y < 5.5) h = c.max.y; // stand on low boxes/ramps
+      const top = c.max.y;
+      if (top > h && top <= feetY + CFG.stepUp) h = top;   // step / roof we can stand on
     }
   }
   return h;
