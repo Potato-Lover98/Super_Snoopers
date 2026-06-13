@@ -691,6 +691,7 @@ function showDevHud() {
 
 function switchWeapon(i) {
   if (i === curWeapon || i < 0 || i > 3) return;
+  if (WEAPONS[i].type === 'throw' && WEAPONS[i].ammo <= 0) return;   // no bombs left → can't equip
   if (WEAPONS[curWeapon].group) WEAPONS[curWeapon].group.visible = false;
   curWeapon = i;
   if (WEAPONS[i].group) WEAPONS[i].group.visible = true;
@@ -709,9 +710,11 @@ function updateWeaponHud() {
   // slot squares
   document.querySelectorAll('.slot').forEach(s => {
     const slot = +s.dataset.slot;
+    const ww = WEAPONS[slot];
+    // bomb slot disappears from the bar when out of bombs
+    if (ww.type === 'throw') s.style.display = ww.ammo > 0 ? '' : 'none';
     s.classList.toggle('active', slot === curWeapon);
     const amtEl = document.getElementById('amt-' + slot);
-    const ww = WEAPONS[slot];
     if (amtEl) amtEl.textContent = ww.type === 'melee' ? '∞' : ww.ammo;
   });
 }
@@ -848,6 +851,9 @@ function throwBomb() {
   const spin = new THREE.Vector3(8, 5, 3);
   grenades.push({ mesh, vel, spin, fuse: 1.6, dmg: w.dmg, radius: w.radius, mine: true });
   if (net) net.send({ t: 'bomb', x: start.x, y: start.y, z: start.z, vx: vel.x, vy: vel.y, vz: vel.z, radius: w.radius });
+
+  // out of bombs → slot vanishes, swap to AK
+  if (w.ammo <= 0) { firing = false; switchWeapon(0); updateWeaponHud(); }
 }
 
 // clone the loaded bomb FBX for a world-space projectile (fallback to sphere)
