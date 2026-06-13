@@ -1,0 +1,17 @@
+# python cruft
+__pycache__/
+*.pyc
+
+# archives
+*.rar
+
+# unused / duplicate asset variants (game does not load these)
+assets/ak/uploads_files_4656550_textures/
+assets/pistol/uploads_files_3221115_texture_Unity5(metallic)/
+assets/bomb/uploads_files_844193_MK2+Grenade/Unity5 Textures/
+assets/bomb/uploads_files_844193_MK2+Grenade/Unreal4 Textures/
+assets/pistol/uploads_files_2127688_tt33_cgtrader/additional_texture_maps/
+assets/pistol/uploads_files_2127688_tt33_cgtrader/specular_gloss_textures/
+
+# Maya source (can't load in browser; convert to .fbx/.glb)
+assets/player/*.ma
