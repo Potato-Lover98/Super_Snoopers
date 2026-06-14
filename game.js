@@ -753,15 +753,20 @@ function fireBullet() {
   playSfx(w.key, 0.6);          // ak / pistol gunshot
   if (w.ammo === 0) reload();
 
-  // hitscan vs remote players
+  // hitscan vs remote players — raycast the whole avatar mesh (full body:
+  // head, torso, limbs all count), fall back to the AABB if needed.
   raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
   let nearest = null, nearDist = Infinity, hitId = null, hitPoint = null;
   for (const [id, rp] of remotePlayers) {
-    const point = new THREE.Vector3();
-    if (raycaster.ray.intersectBox(rp.box, point)) {
-      const d = camera.position.distanceTo(point);
-      if (d < nearDist && !wallBlocks(d)) { nearDist = d; nearest = rp; hitId = id; hitPoint = point.clone(); }
+    if (rp.dead) continue;
+    let d = -1, pt = null;
+    const hits = raycaster.intersectObject(rp.mesh, true);
+    if (hits.length) { d = hits[0].distance; pt = hits[0].point; }
+    else {
+      const p = new THREE.Vector3();
+      if (raycaster.ray.intersectBox(rp.box, p)) { d = camera.position.distanceTo(p); pt = p; }
     }
+    if (d > 0 && d < nearDist && !wallBlocks(d)) { nearDist = d; nearest = rp; hitId = id; hitPoint = pt.clone(); }
   }
   // visual endpoint: enemy → wall → far
   let end;
@@ -820,13 +825,15 @@ function meleeSwing() {
   setTimeout(() => {
     raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
     for (const [id, rp] of remotePlayers) {
-      const point = new THREE.Vector3();
-      if (raycaster.ray.intersectBox(rp.box, point)) {
-        const d = camera.position.distanceTo(point);
-        if (d <= w.range && !wallBlocks(d)) {
-          hitMarker();
-          if (net) net.send({ t: 'hit', target: id, dmg: w.dmg });
-        }
+      if (rp.dead) continue;
+      // close-range full-body: distance to the avatar OR a ray hit within range
+      const bodyDist = camera.position.distanceTo(
+        new THREE.Vector3(rp.mesh.position.x, camera.position.y, rp.mesh.position.z));
+      const hits = raycaster.intersectObject(rp.mesh, true);
+      const rayHit = hits.length && hits[0].distance <= w.range;
+      if ((rayHit || bodyDist <= w.range) && !wallBlocks(Math.min(bodyDist, w.range))) {
+        hitMarker();
+        if (net) net.send({ t: 'hit', target: id, dmg: w.dmg });
       }
     }
   }, w.swingMs * 0.4);
@@ -913,6 +920,36 @@ function explode(g) {
   // splash on self regardless of owner
   const dSelf = controls.getObject().position.distanceTo(g.mesh.position);
   if (dSelf <= g.radius) takeDamage(Math.round(g.dmg * (1 - dSelf / g.radius) * 0.6), g.fromId || 'bomb');
+}
+
+// gory player-death burst (visual + sound), no damage
+function deathExplosion(pos) {
+  const dist = controls.getObject().position.distanceTo(pos);
+  playSfx('bomb', Math.max(0.2, 1 - dist / 60));
+  const light = new THREE.PointLight(0xff5522, 14, 22);
+  light.position.copy(pos); scene.add(light);
+  const ring = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10),
+    new THREE.MeshBasicMaterial({ color: 0xff6a2a, transparent: true, opacity: .8 }));
+  ring.position.copy(pos); scene.add(ring);
+  // chunky debris bits flying out
+  const bits = [];
+  for (let i = 0; i < 14; i++) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xc94c4c, flatShading: true }));
+    b.position.copy(pos).y += 1;
+    b.userData.v = new THREE.Vector3((Math.random()*2-1)*8, Math.random()*9 + 3, (Math.random()*2-1)*8);
+    scene.add(b); bits.push(b);
+  }
+  let life = 1.0;
+  const step = () => {
+    const dt = 0.033; life -= dt;
+    ring.scale.setScalar(1 + (1 - life) * 6); ring.material.opacity = Math.max(0, life * 0.8);
+    light.intensity = Math.max(0, life * 14);
+    for (const b of bits) { b.userData.v.y -= 26 * dt; b.position.addScaledVector(b.userData.v, dt); b.rotation.x += 0.3; b.rotation.y += 0.2; }
+    if (life > 0) requestAnimationFrame(step);
+    else { scene.remove(ring); scene.remove(light); bits.forEach(b => scene.remove(b)); }
+  };
+  step();
 }
 
 function wallBlocks(maxDist) {
@@ -1176,6 +1213,7 @@ function makeAvatar(name, id) {
   ctx.fillText(name || 'SuperSnooper', 150, 46);
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
   tag.position.y = g.userData.tagY; tag.scale.set(1.9, 0.45, 1); g.add(tag);
+  tag.raycast = () => {};   // nametag isn't a hit target
   g.userData.tag = tag;
 
   scene.add(g);
@@ -1241,21 +1279,36 @@ function lerpRemotes(dt) {
     const k = Math.min(1, dt * 12);
     const moved = Math.abs(rp.target.x - m.position.x) + Math.abs(rp.target.z - m.position.z) > 0.01;
     m.position.x += (rp.target.x - m.position.x) * k;
-    m.position.y += (rp.target.y - m.position.y) * k;
     m.position.z += (rp.target.z - m.position.z) * k;
+    // GROUND the avatar to the (identical, seeded) map surface under it → no
+    // levitation, and the hitbox lines up with what's drawn.
+    const surf = surfaceYAt(rp.target.x, rp.target.z, rp.target.y);
+    m.position.y += (surf - m.position.y) * k;
     m.rotation.y += (rp.target.ry - m.rotation.y) * k;
-    // rigged walk animation: run mixer, play only while moving
+    // rigged walk animation: run mixer, play only while moving (no manual bob)
     if (m.userData.mixer) {
       if (m.userData.walk) m.userData.walk.paused = !moved;
       m.userData.mixer.update(dt);
-    } else if (m.userData.legs && moved) {
-      m.position.y += Math.abs(Math.sin(clock.elapsedTime * 8)) * 0.04;  // procedural bob
     }
+    // full-body hitbox, generous, centered on the avatar
     rp.box.setFromCenterAndSize(
-      new THREE.Vector3(m.position.x, m.position.y + 1.1, m.position.z),
-      new THREE.Vector3(1, 2.2, 1)
+      new THREE.Vector3(m.position.x, m.position.y + 1.2, m.position.z),
+      new THREE.Vector3(1.5, 2.5, 1.5)
     );
   }
+}
+
+// highest map surface under (x,z) the player is plausibly standing on
+function surfaceYAt(x, z, hintY) {
+  let h = 0;
+  const r = 0.5;
+  for (const c of colliders) {
+    if (x + r > c.min.x && x - r < c.max.x && z + r > c.min.z && z - r < c.max.z) {
+      const top = c.max.y;
+      if (top > h && top <= (hintY || 0) + 1.4) h = top;
+    }
+  }
+  return h;
 }
 
 // ===========================================================================
@@ -1294,8 +1347,9 @@ function takeDamage(dmg, fromId) {
     player.health = 0; player.alive = false; player.deaths++;
     updateHud();
     addKillFeed(`${nameFor(fromId)} ☠ ${myName}`);
+    deathExplosion(controls.getObject().position.clone());  // you explode
     if (net) net.send({ t: 'died', by: fromId });
-    setTimeout(respawn, 1800);
+    setTimeout(respawn, 5000);                              // respawn after 5s
   }
   updateHud();
 }
@@ -1506,12 +1560,15 @@ function handleNetData(conn, data) {
       grenades.push({ mesh, vel: new THREE.Vector3(data.vx, data.vy, data.vz), spin: new THREE.Vector3(8,5,3), fuse: 1.6, dmg: 0, radius: data.radius, mine: false, fromId: from });
       break;
     }
-    case 'died':
-      setRemoteDead(from, true);
+    case 'died': {
+      const rp = remotePlayers.get(from);
+      if (rp) deathExplosion(rp.mesh.position.clone());   // enemy explodes
+      setRemoteDead(from, true);                           // vanish until respawn
       if (data.by === myId) { player.kills++; updateHud(); addKillFeed(`${myName} ☠ ${nameFor(from)}`); }
       else addKillFeed(`${nameFor(data.by)} ☠ ${nameFor(from)}`);
       renderLeaderboard();
       break;
+    }
     case 'bye':
       removeRemote(from); renderLeaderboard(); if (net && net.host) mmBeat();
       break;
