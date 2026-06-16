@@ -111,6 +111,9 @@ let myId = 'solo';
 let myName = 'SuperSnooper';
 let playerModelTemplate = null; // optional exported player mesh (.glb/.fbx)
 let running = false, paused = false;
+let spectator = false;         // AI-vs-AI: you walk around with no weapon
+let botMode = false;
+const bots = [];               // AI fighters {mesh,name,hp,pos,vel,...,llm}
 
 // recoil state
 let recoil = 0;
@@ -690,6 +693,7 @@ function showDevHud() {
 }
 
 function switchWeapon(i) {
+  if (spectator) return;        // no weapons while spectating AI duel
   if (i === curWeapon || i < 0 || i > 3) return;
   if (WEAPONS[i].type === 'throw' && WEAPONS[i].ammo <= 0) return;   // no bombs left → can't equip
   if (WEAPONS[curWeapon].group) WEAPONS[curWeapon].group.visible = false;
@@ -724,6 +728,7 @@ function updateWeaponHud() {
 // ===========================================================================
 // called once on mouse-down; dispatches by weapon type
 function primaryAction() {
+  if (spectator) return;        // AI-vs-AI spectator has no weapon
   const w = WEAPONS[curWeapon];
   if (!player.alive) return;
   if (w.type === 'melee') return meleeSwing();
@@ -734,7 +739,7 @@ function primaryAction() {
 
 // auto weapons keep firing while held; called every frame from animate
 function autoFire() {
-  if (!firing || paused) return;
+  if (!firing || paused || spectator) return;
   const w = WEAPONS[curWeapon];
   if (w.type === 'auto') fireBullet();
 }
@@ -1257,10 +1262,12 @@ function renderLeaderboard() {
   const rows = document.getElementById('lb-rows');
   const cnt = document.getElementById('lb-count');
   if (!rows) return;
-  const list = [{ name: myName, kills: player.kills, me: true }];
-  for (const rp of remotePlayers.values()) list.push({ name: rp.name, kills: rp.kills || 0, me: false });
+  const list = botMode
+    ? bots.map(b => ({ name: b.name, kills: b.kills, me: false }))
+    : [{ name: myName, kills: player.kills, me: true }];
+  if (!botMode) for (const rp of remotePlayers.values()) list.push({ name: rp.name, kills: rp.kills || 0, me: false });
   list.sort((a, b) => b.kills - a.kills);
-  if (cnt) cnt.textContent = `${list.length}/${MAX_PLAYERS}`;
+  if (cnt) cnt.textContent = botMode ? 'DUEL' : `${list.length}/${MAX_PLAYERS}`;
   rows.innerHTML = list.slice(0, MAX_PLAYERS).map(p =>
     `<div class="lb-row${p.me ? ' me' : ''}"><span class="nm">${escapeHtml(p.name)}</span><span class="kc">${p.kills}</span></div>`
   ).join('');
@@ -1408,6 +1415,7 @@ function animate() {
     updateGrenades(dt);
     updateTracers(dt);
     lerpRemotes(dt);
+    if (botMode) updateBots(dt);
     netTick();
   }
   for (const w of WEAPONS) if (w.mixer) w.mixer.update(dt);
@@ -1419,6 +1427,9 @@ function animate() {
 // GAME START / PAUSE / LEAVE
 // ===========================================================================
 function startGame() {
+  spectator = false; botMode = false; clearBots();
+  document.getElementById('slots').style.display = '';
+  document.getElementById('ammo').style.display = '';
   document.getElementById('overlay').style.display = 'none';
   document.getElementById('hud').style.display = 'block';
   myName = genName();                 // fresh random SuperSnooper#
@@ -1463,13 +1474,16 @@ function leaveGame() {
     net = null;
   }
   for (const id of [...remotePlayers.keys()]) removeRemote(id);
+  clearBots(); botMode = false; spectator = false;
+  document.getElementById('slots').style.display = '';   // restore weapon HUD
+  document.getElementById('ammo').style.display = '';
   running = false; paused = false;
   closePause();
   document.getElementById('hud').style.display = 'none';
   document.getElementById('overlay').style.display = 'flex';
   setRoomUrl(null);
   // reset menu to main
-  ['menu-friends','menu-host'].forEach(m => document.getElementById(m).style.display = 'none');
+  ['menu-friends','menu-host','menu-ai'].forEach(m => document.getElementById(m).style.display = 'none');
   document.getElementById('menu-main').style.display = 'block';
   document.getElementById('main-status').textContent = '';
 }
@@ -1674,16 +1688,181 @@ function startSolo() {
 }
 
 // ===========================================================================
+// AI vs AI — two bots duel, you spectate unarmed
+// ===========================================================================
+function startAiVsAi(key1, key2) {
+  net = null; botMode = true; spectator = true;
+  clearBots();
+  setRoomTag('AI vs AI');
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('hud').style.display = 'block';
+  document.getElementById('slots').style.display = 'none';   // no weapons
+  document.getElementById('ammo').style.display = 'none';
+  myName = 'Spectator';
+  initAudio();
+  running = true; paused = false;
+  // hide all viewmodels
+  WEAPONS.forEach(w => { if (w.group) w.group.visible = false; });
+  // place spectator
+  player.alive = true; player.health = 100;
+  controls.getObject().position.set(0, CFG.eyeHeight + 0.1, 24);
+  player.vel.set(0, 0, 0);
+  // spawn two fighters
+  spawnBot('Botzilla', 0xff5544, -20, key1);
+  spawnBot('NeuralNinja', 0x44aaff, 20, key2);
+  renderLeaderboard();
+  if (!IS_TOUCH) controls.lock();
+}
+
+function spawnBot(name, color, x, apiKey) {
+  const mesh = makeAvatar(name, name);
+  mesh.position.set(x, 0, (Math.random() * 2 - 1) * 20);
+  bots.push({
+    mesh, name, color, hp: 100, dead: false, kills: 0,
+    vel: new THREE.Vector3(), lastShot: 0, fireMs: 260, dmg: 16,
+    strafe: Math.random() < 0.5 ? 1 : -1, nextStrafe: 0, nextTalk: 1500,
+    llm: { key: (apiKey || '').trim() },
+  });
+}
+
+function clearBots() {
+  for (const b of bots) scene.remove(b.mesh);
+  bots.length = 0;
+}
+
+function updateBots(dt) {
+  const now = performance.now();
+  const alive = bots.filter(b => !b.dead);
+  for (const b of bots) {
+    if (b.dead) continue;
+    const target = alive.find(o => o !== b);
+    const m = b.mesh;
+    if (!target) { if (m.userData.walk) m.userData.walk.paused = true; if (m.userData.mixer) m.userData.mixer.update(dt); continue; }
+    const tp = target.mesh.position;
+    const dx = tp.x - m.position.x, dz = tp.z - m.position.z;
+    const dist = Math.hypot(dx, dz) || 1;
+    const nx = dx / dist, nz = dz / dist;
+
+    // movement: approach to ~16, strafe, keep spacing
+    if (now > b.nextStrafe) { b.strafe *= -1; b.nextStrafe = now + 800 + Math.random() * 1400; }
+    const speed = 9;
+    let mvx = 0, mvz = 0;
+    if (dist > 18) { mvx += nx; mvz += nz; }
+    else if (dist < 9) { mvx -= nx; mvz -= nz; }
+    mvx += -nz * b.strafe * 0.7; mvz += nx * b.strafe * 0.7;   // strafe perpendicular
+    const ml = Math.hypot(mvx, mvz) || 1;
+    m.position.x += (mvx / ml) * speed * dt;
+    m.position.z += (mvz / ml) * speed * dt;
+    const A = CFG.arenaHalf - 4;
+    m.position.x = THREE.MathUtils.clamp(m.position.x, -A, A);
+    m.position.z = THREE.MathUtils.clamp(m.position.z, -A, A);
+    m.position.y = surfaceYAt(m.position.x, m.position.z, m.position.y + 0.5);
+    m.rotation.y = Math.atan2(dx, dz);
+    if (m.userData.walk) m.userData.walk.paused = false;
+    if (m.userData.mixer) m.userData.mixer.update(dt);
+    // hitbox
+    b.boxMin = m.position;
+
+    // shoot
+    if (dist < 70 && now - b.lastShot > b.fireMs) {
+      b.lastShot = now;
+      const from = new THREE.Vector3(m.position.x, m.position.y + 1.5, m.position.z);
+      const to = new THREE.Vector3(tp.x, tp.y + 1.3, tp.z);
+      botTracer(from, to);
+      playSfx('ak', Math.max(0.1, 0.4 - dist / 200));
+      if (Math.random() < 0.55) botHit(target, b);   // accuracy
+    }
+
+    // periodic LLM "thought"/taunt
+    if (b.llm.key && now > b.nextTalk) {
+      b.nextTalk = now + 7000 + Math.random() * 6000;
+      botThink(b, target, dist);
+    } else if (!b.llm.key && now > b.nextTalk) {
+      b.nextTalk = now + 1e9;   // no key → never talk
+    }
+  }
+}
+
+function botTracer(from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 1 }));
+  line.frustumCulled = false; scene.add(line);
+  tracers.push({ mesh: line, life: 0.06 });
+}
+
+function botHit(target, attacker) {
+  target.hp -= attacker.dmg;
+  if (target.hp <= 0) {
+    target.hp = 0; target.dead = true; target.mesh.visible = false;
+    attacker.kills++;
+    deathExplosion(target.mesh.position.clone());
+    addKillFeed(`${attacker.name} ☠ ${target.name}`);
+    renderLeaderboard();
+    setTimeout(() => {
+      if (!botMode) return;
+      const A = CFG.arenaHalf - 10;
+      target.mesh.position.set((Math.random() * 2 - 1) * A, 0, (Math.random() * 2 - 1) * A);
+      target.hp = 100; target.dead = false; target.mesh.visible = true;
+      renderLeaderboard();
+    }, 5000);
+  }
+}
+
+// ---- LLM: each fighter "thinks" out loud (taunt). Robust: failures ignored ----
+async function botThink(bot, target, dist) {
+  const prompt = `You are ${bot.name}, a cocky low-poly arena bot dueling ${target.name} `
+    + `(distance ${Math.round(dist)}, your HP ${bot.hp}). Reply with ONE short trash-talk line, max 8 words, no quotes.`;
+  try {
+    const txt = await callLLM(bot.llm.key, prompt);
+    if (txt) addKillFeed(`${bot.name}: ${txt.replace(/^["']|["']$/g, '').slice(0, 60)}`);
+  } catch (e) { /* CORS / bad key → silent, bot keeps fighting */ }
+}
+
+async function callLLM(key, prompt) {
+  if (!key) return null;
+  if (key.startsWith('sk-ant')) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({ model: 'claude-3-5-haiku-latest', max_tokens: 32, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const j = await r.json();
+    return j && j.content && j.content[0] && j.content[0].text;
+  }
+  // default: OpenAI-compatible
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+    body: JSON.stringify({ model: 'gpt-4o-mini', max_tokens: 32, messages: [{ role: 'user', content: prompt }] }),
+  });
+  const j = await r.json();
+  return j && j.choices && j.choices[0] && j.choices[0].message.content;
+}
+
+// ===========================================================================
 // MENU WIRING
 // ===========================================================================
 function wireMenu() {
   const $ = id => document.getElementById(id);
   const show = id => {
-    ['menu-main','menu-friends','menu-host'].forEach(m => $(m).style.display = m === id ? 'block' : 'none');
+    ['menu-main','menu-friends','menu-host','menu-ai'].forEach(m => $(m).style.display = m === id ? 'block' : 'none');
   };
   const hasPeer = typeof Peer !== 'undefined';
 
   $('btn-solo').onclick = () => startSolo();
+
+  // AI vs AI
+  $('btn-ai').onclick = () => show('menu-ai');
+  $('btn-back-ai').onclick = () => show('menu-main');
+  $('btn-ai-start').onclick = () => {
+    $('ai-status').textContent = 'Starting duel…';
+    startAiVsAi($('ai-key1').value, $('ai-key2').value);
+  };
 
   $('btn-play').onclick = () => {
     if (!hasPeer) { $('main-status').textContent = 'PeerJS not loaded — starting practice.'; return startSolo(); }

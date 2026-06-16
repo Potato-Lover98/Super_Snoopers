@@ -164,6 +164,8 @@
     background: rgba(0,0,0,.3); color: #fff; font-size: 15px; text-transform: uppercase; letter-spacing: 2px; text-align: center;
   }
   .roomcode { font-size: 30px; font-weight: 900; letter-spacing: 6px; color: var(--accent2); margin: 14px 0; user-select: all; }
+  .ai-input { width: 100%; padding: 12px; margin: 6px 0; border-radius: 10px; border: 1px solid rgba(255,255,255,.15);
+    background: rgba(0,0,0,.3); color: #fff; font-size: 13px; font-family: monospace; }
   .status { min-height: 20px; font-size: 13px; opacity: .8; margin-top: 14px; }
   .back { background: none; opacity: .6; font-size: 13px; margin-top: 10px; }
   .controls-hint { margin-top: 24px; font-size: 12px; opacity: .45; line-height: 1.7; }
@@ -238,6 +240,7 @@
     <button class="menu-btn primary" id="btn-play">▶ PLAY — Quick Match</button>
     <button class="menu-btn friend" id="btn-friends">👥 Play with Friends</button>
     <button class="menu-btn" id="btn-solo">🎯 Practice (offline)</button>
+    <button class="menu-btn" id="btn-ai" style="background:linear-gradient(90deg,#7e3ff2,#b06bff)">🤖 AI vs AI</button>
     <div class="status" id="main-status"></div>
     <div id="loadbar-wrap"><div id="loadbar"></div></div>
     <div class="controls-hint">WASD move · SHIFT sprint · SPACE jump · MOUSE look · CLICK shoot · R reload</div>
@@ -251,6 +254,18 @@
     <div class="row"><input id="join-code" maxlength="5" placeholder="ROOM ID" /><button class="menu-btn" style="width:auto;margin:0;padding:13px 20px" id="btn-join">Join</button></div>
     <div class="status" id="friends-status"></div>
     <button class="menu-btn back" id="btn-back1">← back</button>
+  </div>
+
+  <!-- AI vs AI -->
+  <div class="panel" id="menu-ai" style="display:none">
+    <div class="logo" style="font-size:28px">AI vs AI</div>
+    <div class="tagline">two AIs duel — you spectate, unarmed</div>
+    <div style="opacity:.6;font-size:12px;margin-bottom:8px">Paste an API key per fighter (OpenAI <code>sk-…</code> or Anthropic <code>sk-ant-…</code>). Keys stay in your browser. Leave blank for a dumb bot.</div>
+    <input id="ai-key1" class="ai-input" placeholder="🤖 Fighter 1 — API key (optional)" />
+    <input id="ai-key2" class="ai-input" placeholder="🤖 Fighter 2 — API key (optional)" />
+    <button class="menu-btn primary" id="btn-ai-start" style="margin-top:10px">▶ Start Duel</button>
+    <div class="status" id="ai-status"></div>
+    <button class="menu-btn back" id="btn-back-ai">← back</button>
   </div>
 
   <!-- HOST WAIT -->
