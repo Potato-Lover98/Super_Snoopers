@@ -339,7 +339,13 @@ function normalizePlayer(obj) {
   obj.updateMatrixWorld(true);            // apply scale before re-measuring
   const box = new THREE.Box3().setFromObject(obj);
   obj.position.y -= box.min.y;            // feet on ground (y=0)
-  obj.traverse(o => { if (o.isMesh || o.isSkinnedMesh) { o.castShadow = true; o.frustumCulled = false; } });
+  obj.traverse(o => {
+    if (o.isMesh || o.isSkinnedMesh) {
+      o.castShadow = true; o.frustumCulled = false;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach(m => { if (m && m.emissive) { m.emissive.setHex(0x000000); m.emissiveIntensity = 0; } });
+    }
+  });
   return obj;
 }
 
@@ -1751,8 +1757,10 @@ function updateBots(dt) {
     else if (dist < 9) { mvx -= nx; mvz -= nz; }
     mvx += -nz * b.strafe * 0.7; mvz += nx * b.strafe * 0.7;   // strafe perpendicular
     const ml = Math.hypot(mvx, mvz) || 1;
-    m.position.x += (mvx / ml) * speed * dt;
-    m.position.z += (mvz / ml) * speed * dt;
+    const stepX = (mvx / ml) * speed * dt, stepZ = (mvz / ml) * speed * dt;
+    const feet = m.position.y;
+    if (!botBlocked(m.position.x + stepX, m.position.z, feet)) m.position.x += stepX; else b.nextStrafe = 0;
+    if (!botBlocked(m.position.x, m.position.z + stepZ, feet)) m.position.z += stepZ; else b.nextStrafe = 0;
     const A = CFG.arenaHalf - 4;
     m.position.x = THREE.MathUtils.clamp(m.position.x, -A, A);
     m.position.z = THREE.MathUtils.clamp(m.position.z, -A, A);
@@ -1781,6 +1789,16 @@ function updateBots(dt) {
       b.nextTalk = now + 1e9;   // no key → never talk
     }
   }
+}
+
+// blocked if a wall taller than a step sits at the bot's feet
+function botBlocked(x, z, feetY) {
+  const r = 0.5;
+  for (const c of colliders) {
+    if (x + r > c.min.x && x - r < c.max.x && z + r > c.min.z && z - r < c.max.z &&
+        c.max.y - feetY > CFG.stepUp && feetY < c.max.y) return true;
+  }
+  return false;
 }
 
 function botTracer(from, to) {
